@@ -12,3 +12,13 @@ prometheus = "0.14"
 axum = "0.8.4"
 shellexpand = "2"
 dotenvy = "0.15.7"
+
+
+[[bin]]
+name = "cache"
+path = "src/cache_helper.rs"
+
+
+[[bin]]
+name = "server"
+path = "src/main.rs"
