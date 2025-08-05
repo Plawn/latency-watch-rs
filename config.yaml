@@ -1,0 +1,24 @@
+
+listen_addr: "0.0.0.0:9090"
+
+scrape_interval_seconds: 15
+
+auths:
+  # - name: Bearer
+  #   config: 
+  #     type: Bearer
+  #     token: TOKEN
+  
+  - name: Blumana
+    config: 
+      type: OAuth
+      url: https://identity.blumana.app
+      realm: blumana
+      client_id: front
+      user: ${BLU_USERNAME}
+      pass: ${BLU_PASSWORD}
+
+routes:
+  - name: "Self"
+    url: https://api2.temp2-webservice.blumana.app/user/self
+    auth: Blumana
