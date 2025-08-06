@@ -1,5 +1,5 @@
-
 use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
+use dotenvy::dotenv;
 use prometheus::{Encoder, HistogramOpts, HistogramVec, Registry, TextEncoder};
 use reqwest::Client;
 use rest_latency::keycloak_client::KeycloakClient;
@@ -9,7 +9,6 @@ use std::fs;
 use std::net::SocketAddr;
 use std::time::Instant;
 use tokio::time::{Duration, interval};
-use dotenvy::dotenv;
 
 #[derive(Debug, Deserialize, Clone)]
 struct RouteConfig {
@@ -66,7 +65,9 @@ async fn main() {
     // Metrics registry
     let registry = Registry::new();
     let histogram = HistogramVec::new(
-        HistogramOpts::new("route_latency_seconds", "HTTP route latency in seconds"),
+        HistogramOpts::new("route_latency_seconds", "HTTP route latency in seconds").buckets(vec![
+            0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.375, 0.5, 0.75, 1.0, 2.5, 5.0, 10.0,
+        ]),
         &["route"],
     )
     .expect("metric creation failed");
