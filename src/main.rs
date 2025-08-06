@@ -1,3 +1,4 @@
+
 use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
 use prometheus::{Encoder, HistogramOpts, HistogramVec, Registry, TextEncoder};
 use reqwest::Client;
@@ -101,6 +102,7 @@ async fn main() {
                                 ref user,
                                 ref pass,
                             } => {
+                                // should be cached an re used
                                 let auth = KeycloakClient::new(&url);
                                 let t = auth.get_token(&realm, &client_id, &user, &pass).await;
                                 if let Ok(token) = t {
@@ -129,7 +131,7 @@ async fn main() {
                 if warmups_done.contains(&route.name) {
                     // we should drop the first one, as tls negociation is slow
                     let elapsed = timer.elapsed().as_secs_f64();
-                    println!("took: {}", &elapsed);
+                    println!("{} -> {}", &route.name, &elapsed);
                     hist.with_label_values(&[&route.name]).observe(elapsed);
                 } else {
                     warmups_done.insert(route.name.clone());

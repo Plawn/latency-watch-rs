@@ -1,0 +1,9 @@
+
+services:
+  latency-watcher:
+    build: .
+    environment:
+      BLU_USERNAME: value
+      BLU_PASSWORD: value
+    volumes:
+      - ./config.yaml:/config.yaml
