@@ -12,6 +12,7 @@ prometheus = "0.14"
 axum = "0.8.4"
 shellexpand = "2"
 dotenvy = "0.15.7"
+chrono = "0.4.41"
 
 [profile.release]
 strip = true      # Automatically strip symbols from the binary.

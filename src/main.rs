@@ -4,7 +4,7 @@ use prometheus::{Encoder, HistogramOpts, HistogramVec, Registry, TextEncoder};
 use reqwest::Client;
 use rest_latency::keycloak_client::KeycloakClient;
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::net::SocketAddr;
 use std::time::Instant;
@@ -82,6 +82,7 @@ async fn main() {
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(interval_secs));
         let mut warmups_done = HashSet::new();
+        let mut auth_clients: HashMap<&String, KeycloakClient> = HashMap::new();
         loop {
             ticker.tick().await;
             for route in &routes {
@@ -103,8 +104,9 @@ async fn main() {
                                 ref user,
                                 ref pass,
                             } => {
-                                // should be cached an re used
-                                let auth = KeycloakClient::new(&url);
+                                let auth = auth_clients
+                                    .entry(url)
+                                    .or_insert_with(|| KeycloakClient::new(&url));
                                 let t = auth.get_token(&realm, &client_id, &user, &pass).await;
                                 if let Ok(token) = t {
                                     req = req.bearer_auth(token);
