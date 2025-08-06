@@ -73,19 +73,16 @@ async fn main() {
     .expect("metric creation failed");
     registry.register(Box::new(histogram.clone())).unwrap();
 
-    // HTTP client
-    let client = Client::new();
-    // Spawn scraper task
-    let routes = cfg.routes.clone();
     let hist = histogram.clone();
     let interval_secs = cfg.scrape_interval_seconds;
     tokio::spawn(async move {
+        let client = Client::new();
         let mut ticker = interval(Duration::from_secs(interval_secs));
         let mut warmups_done = HashSet::new();
         let mut auth_clients: HashMap<&String, KeycloakClient> = HashMap::new();
         loop {
             ticker.tick().await;
-            for route in &routes {
+            for route in &cfg.routes {
                 let mut req = client.get(&route.url);
                 if let Some(auth_name) = &route.auth {
                     let _auth = cfg.auths.iter().find(|e| &e.name == auth_name);

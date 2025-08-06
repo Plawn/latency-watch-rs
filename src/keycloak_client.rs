@@ -7,6 +7,7 @@ pub struct Key(String);
 #[derive(Debug)]
 pub struct KeycloakClient {
     pub url: String,
+    pub client: reqwest::Client,
     pub cached_tokens: HashMap<Key, (String, DateTime<Utc>)>,
 }
 
@@ -15,6 +16,7 @@ impl KeycloakClient {
         Self {
             url: url.to_owned(),
             cached_tokens: HashMap::new(),
+            client: reqwest::Client::new(),
         }
     }
 
@@ -35,7 +37,8 @@ impl KeycloakClient {
         // if not invalid entry and update
         let key = self.make_key(realm, client_id, username, password);
         if let Some((token, valid_until)) = self.cached_tokens.get(&key) {
-            if valid_until.timestamp() - chrono::Utc::now().timestamp() > 0 {
+            if valid_until.timestamp() - chrono::Utc::now().timestamp() > 1 {
+                // at least one second remaining
                 return Ok(token.clone());
             }
         }
@@ -51,8 +54,7 @@ impl KeycloakClient {
             ("password", password),
         ];
 
-        let client = reqwest::Client::new();
-        let resp = client.post(&token_url).form(&params).send().await?;
+        let resp = self.client.post(&token_url).form(&params).send().await?;
 
         #[derive(Deserialize)]
         struct TokenResponse {
