@@ -1,14 +1,18 @@
 use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
 use dotenvy::dotenv;
+use futures::StreamExt;
+use futures::lock::Mutex;
 use prometheus::{Encoder, HistogramOpts, HistogramVec, Registry, TextEncoder};
 use reqwest::Client;
 use rest_latency::keycloak_client::KeycloakClient;
 use serde::Deserialize;
+use signal_hook::consts::SIGHUP;
+use signal_hook_tokio::Signals;
 use std::collections::{HashMap, HashSet};
-use std::fs;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Instant;
-use tokio::time::{Duration, interval};
+use tokio::time::{Duration, interval}; // Required for `.next().await`
 
 #[derive(Debug, Deserialize, Clone)]
 struct RouteConfig {
@@ -36,7 +40,7 @@ enum AuthConfig {
     },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Auth {
     name: String,
     config: AuthConfig,
@@ -50,17 +54,45 @@ struct AppConfig {
     listen_addr: String,
 }
 
-#[tokio::main]
-async fn main() {
-    dotenv().ok();
-
+async fn load_config() -> AppConfig {
     // Load and preprocess config with environment variable substitution
-    let raw = fs::read_to_string("config.yaml").expect("config.yaml not found");
+    let raw = tokio::fs::read_to_string("config.yaml")
+        .await
+        .expect("config.yaml not found");
     // Expand ${VAR} or $VAR in the file using current environment
     let expanded = shellexpand::env(&raw)
         .expect("Failed to expand environment variables in config")
         .to_string();
     let cfg: AppConfig = serde_yaml::from_str(&expanded).expect("Invalid config");
+    cfg
+}
+
+async fn use_config() -> Arc<Mutex<AppConfig>> {
+    let cfg = Arc::from(Mutex::new(load_config().await));
+    let mut signals = Signals::new(&[SIGHUP]).expect("failed to register signals");
+    let cfg_clone = Arc::clone(&cfg);
+    tokio::spawn(async move {
+        while let Some(sig) = signals.next().await {
+            match sig {
+                SIGHUP => {
+                    println!("Reloading configuration...");
+                    // Lock the mutex and update the config
+                    let config = load_config().await;
+                    let mut cfg_guard = cfg_clone.lock().await;
+                    *cfg_guard = config;
+                    println!("Configuration reloaded!");
+                }
+                _ => unreachable!(),
+            }
+        }
+    });
+    cfg
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    dotenv().ok();
+    let cfg = use_config().await;
 
     // Metrics registry
     let registry = Registry::new();
@@ -73,19 +105,31 @@ async fn main() {
     .expect("metric creation failed");
     registry.register(Box::new(histogram.clone())).unwrap();
 
+    let addr: SocketAddr = cfg
+        .lock()
+        .await
+        .listen_addr
+        .parse()
+        .expect("Invalid listen_addr");
+
     let hist = histogram.clone();
-    let interval_secs = cfg.scrape_interval_seconds;
+    let interval_secs = cfg.lock().await.scrape_interval_seconds;
     tokio::spawn(async move {
         let client = Client::new();
         let mut ticker = interval(Duration::from_secs(interval_secs));
         let mut warmups_done = HashSet::new();
-        let mut auth_clients: HashMap<&String, KeycloakClient> = HashMap::new();
+        let mut auth_clients: HashMap<String, KeycloakClient> = HashMap::new();
         loop {
             ticker.tick().await;
-            for route in &cfg.routes {
+            let cfg_guard = cfg.lock().await;
+            // Clone or copy the necessary data while holding the lock
+            let routes = cfg_guard.routes.clone(); // Make sure `routes` can be cloned
+            let auths = cfg_guard.auths.clone(); // Make sure `auths` can be cloned
+            drop(cfg_guard); // Explicitly drop the lock as soon as possible
+            for route in &routes {
                 let mut req = client.get(&route.url);
                 if let Some(auth_name) = &route.auth {
-                    let _auth = cfg.auths.iter().find(|e| &e.name == auth_name);
+                    let _auth = auths.iter().find(|e| &e.name == auth_name).cloned();
                     if let Some(auth) = _auth {
                         match auth.config {
                             AuthConfig::Bearer { ref token } => {
@@ -97,12 +141,13 @@ async fn main() {
                             AuthConfig::OAuth {
                                 ref client_id,
                                 ref realm,
-                                ref url,
+                                url,
                                 ref user,
                                 ref pass,
                             } => {
+                                let u = url.clone();
                                 let auth = auth_clients
-                                    .entry(url)
+                                    .entry(u)
                                     .or_insert_with(|| KeycloakClient::new(&url));
                                 let t = auth.get_token(&realm, &client_id, &user, &pass).await;
                                 if let Ok(token) = t {
@@ -162,8 +207,9 @@ async fn main() {
     );
 
     // Parse listen address
-    let addr: SocketAddr = cfg.listen_addr.parse().expect("Invalid listen_addr");
+
     println!("Starting metrics server on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+    Ok(())
 }

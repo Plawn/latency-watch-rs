@@ -37,10 +37,8 @@ impl KeycloakClient {
         // if not invalid entry and update
         let key = self.make_key(realm, client_id, username, password);
         if let Some((token, valid_until)) = self.cached_tokens.get(&key) {
-            println!("found cached token {}", &token);
             let now = chrono::Utc::now().timestamp();
             if valid_until.timestamp() - now > 1 {
-                println!("using cached token");
                 // at least one second remaining
                 return Ok(token.clone());
             } else {
