@@ -22,7 +22,7 @@ impl KeycloakClient {
 
     fn make_key(&self, realm: &str, client_id: &str, username: &str, password: &str) -> Key {
         let s = format!("{}:{}:{}:{}", realm, client_id, username, password);
-        return Key(s);
+        Key(s)
     }
 
     pub async fn get_token(

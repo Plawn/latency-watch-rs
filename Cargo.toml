@@ -26,7 +26,6 @@ codegen-units = 1
 name = "cache"
 path = "src/cache_helper.rs"
 
-
 [[bin]]
 name = "server"
 path = "src/main.rs"

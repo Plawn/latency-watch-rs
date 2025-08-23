@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::time::{Duration, interval}; // Required for `.next().await`
+use tokio::time::{Duration, interval};
 
 #[derive(Debug, Deserialize, Clone)]
 struct RouteConfig {
@@ -69,7 +69,7 @@ async fn load_config() -> AppConfig {
 
 async fn use_config() -> Arc<Mutex<AppConfig>> {
     let cfg = Arc::from(Mutex::new(load_config().await));
-    let mut signals = Signals::new(&[SIGHUP]).expect("failed to register signals");
+    let mut signals = Signals::new([SIGHUP]).expect("failed to register signals");
     let cfg_clone = Arc::clone(&cfg);
     tokio::spawn(async move {
         while let Some(sig) = signals.next().await {
@@ -133,7 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Some(auth) = _auth {
                         match auth.config {
                             AuthConfig::Bearer { ref token } => {
-                                req = req.bearer_auth(&token);
+                                req = req.bearer_auth(token);
                             }
                             AuthConfig::Basic { ref user, ref pass } => {
                                 req = req.basic_auth(user, Some(pass));
@@ -149,7 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let auth = auth_clients
                                     .entry(u)
                                     .or_insert_with(|| KeycloakClient::new(&url));
-                                let t = auth.get_token(&realm, &client_id, &user, &pass).await;
+                                let t = auth.get_token(realm, client_id, user, pass).await;
                                 if let Ok(token) = t {
                                     req = req.bearer_auth(token);
                                 } else {
