@@ -1,3 +1,4 @@
+use axum::extract::State;
 use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
 use dotenvy::dotenv;
 use futures::StreamExt;
@@ -8,12 +9,13 @@ use rest_latency::keycloak_client::KeycloakClient;
 use serde::Deserialize;
 use signal_hook::consts::SIGHUP;
 use signal_hook_tokio::Signals;
+use tracing::Level;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::time::{Duration, interval};
-
+use tracing_subscriber::FmtSubscriber;
 #[derive(Debug, Deserialize, Clone)]
 struct RouteConfig {
     name: String,
@@ -92,6 +94,11 @@ async fn use_config() -> Arc<Mutex<AppConfig>> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
+    // Set up structured logging using the `tracing` crate.
+    let subscriber = FmtSubscriber::builder()
+        .with_max_level(Level::INFO)
+        .finish();
+    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
     let cfg = use_config().await;
 
     // Metrics registry
@@ -162,49 +169,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 let timer = Instant::now();
                 let resp = req.send().await;
-                match resp {
+                let ok = match resp {
                     Ok(r) => {
                         if !r.status().is_success() {
                             eprintln!("Non 200 response code, got {}", r.status().as_str());
                         }
+                        true
                     }
                     Err(e) => {
                         eprintln!("Error fetching {}: {}", route.name, e);
+                        false
                     }
                 };
-                // could be optimized
-                if warmups_done.contains(&route.name) {
-                    // we should drop the first one, as tls negociation is slow
-                    let elapsed = timer.elapsed().as_secs_f64();
-                    println!("{} -> {}", &route.name, &elapsed);
-                    hist.with_label_values(&[&route.name]).observe(elapsed);
-                } else {
-                    warmups_done.insert(route.name.clone());
-                    println!("drop first query; this is tls warmup");
+                if ok {
+                    // could be optimized
+                    if warmups_done.contains(&route.name) {
+                        // we should drop the first one, as tls negociation is slow
+                        let elapsed = timer.elapsed().as_secs_f64();
+                        println!("{} -> {}", &route.name, &elapsed);
+                        hist.with_label_values(&[&route.name]).observe(elapsed);
+                    } else {
+                        warmups_done.insert(route.name.clone());
+                        println!("drop first query; this is tls warmup");
+                    }
                 }
             }
         }
     });
-
+    let app_state = Arc::new(AppState { registry });
     // Build Axum app
-    let app = Router::new().route(
-        "/metrics",
-        get(move || {
-            let registry = registry.clone();
-            async move {
-                let encoder = TextEncoder::new();
-                let metric_families = registry.gather();
-                let mut buffer = Vec::new();
-                encoder.encode(&metric_families, &mut buffer).unwrap();
-                (
-                    StatusCode::OK,
-                    [("Content-Type", encoder.format_type().to_string())],
-                    buffer,
-                )
-                    .into_response()
-            }
-        }),
-    );
+    let app = Router::new()
+        .route("/metrics", get(metrics_handler))
+        .with_state(app_state);
 
     // Parse listen address
 
@@ -212,4 +208,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
     Ok(())
+}
+
+// --- Application State ---
+// By creating a dedicated AppState struct, we can use Axum's `State` extractor,
+// making our handlers cleaner and state management more explicit.
+struct AppState {
+    registry: Registry,
+}
+
+/// A dedicated, clean handler for the /metrics endpoint.
+/// It uses the `State` extractor to gain access to the application state (the registry)
+/// in an idiomatic way.
+async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let encoder = TextEncoder::new();
+    let metric_families = state.registry.gather();
+    let mut buffer = Vec::new();
+
+    // The .unwrap() is safe here as encoding to a Vec<u8> should not fail.
+    encoder.encode(&metric_families, &mut buffer).unwrap();
+
+    (
+        StatusCode::OK,
+        [("Content-Type", encoder.format_type().to_string())],
+        buffer,
+    )
 }
