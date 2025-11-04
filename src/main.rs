@@ -9,12 +9,12 @@ use rest_latency::keycloak_client::KeycloakClient;
 use serde::Deserialize;
 use signal_hook::consts::SIGHUP;
 use signal_hook_tokio::Signals;
-use tracing::Level;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::time::{Duration, interval};
+use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 #[derive(Debug, Deserialize, Clone)]
 struct RouteConfig {
@@ -121,78 +121,105 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let hist = histogram.clone();
     let interval_secs = cfg.lock().await.scrape_interval_seconds;
+    let client = Client::new();
+    let auth_clients = Arc::new(Mutex::new(HashMap::new()));
+
     tokio::spawn(async move {
-        let client = Client::new();
         let mut ticker = interval(Duration::from_secs(interval_secs));
-        let mut warmups_done = HashSet::new();
-        let mut auth_clients: HashMap<String, KeycloakClient> = HashMap::new();
+
         loop {
             ticker.tick().await;
+
+            // Lock and clone the configuration needed for this tick.
             let cfg_guard = cfg.lock().await;
-            // Clone or copy the necessary data while holding the lock
-            let routes = cfg_guard.routes.clone(); // Make sure `routes` can be cloned
-            let auths = cfg_guard.auths.clone(); // Make sure `auths` can be cloned
-            drop(cfg_guard); // Explicitly drop the lock as soon as possible
-            for route in &routes {
-                let mut req = client.get(&route.url);
-                if let Some(auth_name) = &route.auth {
-                    let _auth = auths.iter().find(|e| &e.name == auth_name).cloned();
-                    if let Some(auth) = _auth {
-                        match auth.config {
-                            AuthConfig::Bearer { ref token } => {
-                                req = req.bearer_auth(token);
-                            }
-                            AuthConfig::Basic { ref user, ref pass } => {
-                                req = req.basic_auth(user, Some(pass));
-                            }
-                            AuthConfig::OAuth {
-                                ref client_id,
-                                ref realm,
-                                url,
-                                ref user,
-                                ref pass,
-                            } => {
-                                let u = url.clone();
-                                let auth = auth_clients
-                                    .entry(u)
-                                    .or_insert_with(|| KeycloakClient::new(&url));
-                                let t = auth.get_token(realm, client_id, user, pass).await;
-                                if let Ok(token) = t {
+            let routes = cfg_guard.routes.clone();
+            let auths = cfg_guard.auths.clone();
+            drop(cfg_guard); // Release the lock as soon as possible.
+
+            // Iterate over the routes and spawn a separate task for each one.
+            for route in routes {
+                // Clone the necessary data for the new task.
+                // Cloning an Arc is cheap as it only increments a reference counter.
+                let client = client.clone();
+                let auths_clone = auths.clone();
+                let auth_clients_clone = Arc::clone(&auth_clients);
+                let hist_clone = hist.clone();
+
+                tokio::spawn(async move {
+                    let mut req = client.get(&route.url);
+
+                    if let Some(auth_name) = &route.auth {
+                        if let Some(auth) = auths_clone.iter().find(|e| &e.name == auth_name) {
+                            match &auth.config {
+                                AuthConfig::Bearer { token } => {
                                     req = req.bearer_auth(token);
-                                } else {
-                                    eprintln!("failed to get token for {}", &auth_name);
-                                    continue;
+                                }
+                                AuthConfig::Basic { user, pass } => {
+                                    req = req.basic_auth(user, Some(pass));
+                                }
+                                AuthConfig::OAuth {
+                                    client_id,
+                                    realm,
+                                    url,
+                                    user,
+                                    pass,
+                                } => {
+                                    let token_result = {
+                                        // Lock the mutex to safely access the shared HashMap.
+                                        let mut auth_clients_guard =
+                                            auth_clients_clone.lock().await;
+                                        let keycloak_client = auth_clients_guard
+                                            .entry(url.to_string())
+                                            .or_insert_with(|| KeycloakClient::new(url));
+                                        // Get the token while holding the lock.
+                                        keycloak_client
+                                            .get_token(realm, client_id, user, pass)
+                                            .await
+                                    }; // The lock is released here.
+
+                                    match token_result {
+                                        Ok(token) => {
+                                            req = req.bearer_auth(token);
+                                        }
+                                        Err(_) => {
+                                            eprintln!("failed to get token for {}", &auth_name);
+                                            return; // Stop processing this route for this tick.
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                let timer = Instant::now();
-                let resp = req.send().await;
-                let ok = match resp {
-                    Ok(r) => {
-                        if !r.status().is_success() {
-                            eprintln!("Non 200 response code, got {}", r.status().as_str());
+
+                    let timer = Instant::now();
+                    let resp = req.send().await;
+
+                    let ok = match resp {
+                        Ok(r) => {
+                            if !r.status().is_success() {
+                                eprintln!(
+                                    "Non 200 response code for {}: got {}",
+                                    &route.name,
+                                    r.status().as_str()
+                                );
+                            }
+                            true
                         }
-                        true
-                    }
-                    Err(e) => {
-                        eprintln!("Error fetching {}: {}", route.name, e);
-                        false
-                    }
-                };
-                if ok {
-                    // could be optimized
-                    if warmups_done.contains(&route.name) {
-                        // we should drop the first one, as tls negociation is slow
+                        Err(e) => {
+                            eprintln!("Error fetching {}: {}", &route.name, e);
+                            false
+                        }
+                    };
+
+                    if ok {
+                        // here the first query will have the tls negociation time in it,
+                        // so it will be longer
                         let elapsed = timer.elapsed().as_secs_f64();
-                        println!("{} -> {}", &route.name, &elapsed);
-                        hist.with_label_values(&[&route.name]).observe(elapsed);
-                    } else {
-                        warmups_done.insert(route.name.clone());
-                        println!("drop first query; this is tls warmup");
+                        hist_clone
+                            .with_label_values(&[&route.name])
+                            .observe(elapsed);
                     }
-                }
+                });
             }
         }
     });

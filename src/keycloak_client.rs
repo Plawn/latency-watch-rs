@@ -25,6 +25,9 @@ impl KeycloakClient {
         Key(s)
     }
 
+    /// returns a Bearer token
+    /// returns a cached token valid at least one second
+    /// if a cached token is available it will be returned
     pub async fn get_token(
         &mut self,
         realm: &str,
