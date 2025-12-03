@@ -26,4 +26,4 @@ COPY --from=builder /app/target/release/server server
 # set the binary as entrypoint
 ENTRYPOINT ["/server"]
 
-EXPOSE 4000
+EXPOSE 9090
