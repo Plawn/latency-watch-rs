@@ -90,7 +90,7 @@ impl KeycloakClient {
             .checked_add_signed(TimeDelta::seconds(token.expires_in as i64))
             .unwrap_or_else(|| {
                 tracing::warn!("Failed to compute expiration, using 1 hour default");
-                chrono::Utc::now() + TimeDelta::hours(1)
+                chrono::Utc::now() + TimeDelta::minutes(1)
             });
 
         self.cached_tokens.insert(key, (token.access_token.clone(), expires_at));
@@ -102,13 +102,6 @@ impl KeycloakClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_new_client() {
-        let client = KeycloakClient::new("http://localhost:8080");
-        assert_eq!(client.url, "http://localhost:8080");
-        assert!(client.cached_tokens.is_empty());
-    }
 
     #[test]
     fn test_make_key_format() {

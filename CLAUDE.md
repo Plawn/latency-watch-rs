@@ -12,7 +12,7 @@ rest-latency is a Rust service that monitors HTTP endpoint latencies and exposes
 # Build all binaries
 cargo build
 
-# Build release (optimized, stripped)
+# Build release (optimized, stripped with LTO)
 cargo build --release
 
 # Run the main metrics server
@@ -30,24 +30,49 @@ cargo test
 
 ## Architecture
 
-**Main binary (`server`)**: Located at `src/main.rs`. Runs two concurrent tasks:
-1. A background ticker that fetches all configured routes at `scrape_interval_seconds` intervals
-2. An Axum HTTP server exposing `/metrics` and `/health` endpoints
+### Binaries
 
-**HTTP Endpoints**:
-- `/metrics` - Prometheus metrics (route latencies, auth attempts)
-- `/health` - Health check (returns 200 OK)
+- **`server`** (`src/main.rs`): Main metrics server
+- **`cache`** (`src/cache_helper.rs`): Placeholder utility (not yet implemented)
 
-**Graceful shutdown**: Handles SIGINT (Ctrl+C) for clean shutdown.
+### Module Structure
 
-**Configuration**: Loaded from `config.yaml` with environment variable expansion (`${VAR}` syntax via shellexpand). Supports hot-reload on SIGHUP signal.
+- `src/main.rs` - Entry point, HTTP server setup, graceful shutdown
+- `src/config.rs` - Configuration loading, SIGHUP hot-reload via `watch::channel`
+- `src/metrics.rs` - Prometheus metrics definitions (`Metrics` struct)
+- `src/scraper.rs` - Background scraping loop with `CancellationToken` for restart
+- `src/lib.rs` - Library exports (`keycloak_client` module)
+- `src/keycloak_client.rs` - OAuth token acquisition with in-memory caching
 
-**Authentication types** (defined via `AuthConfig` enum):
-- `Bearer`: Static token
-- `Basic`: Username/password
-- `OAuth`: Keycloak-style password grant flow with token caching
+### Main Flow
 
-**KeycloakClient** (`src/keycloak_client.rs`): Handles OAuth token acquisition with in-memory caching. Tokens are cached until 1 second before expiration.
+1. Load config via `with_hot_reload()` which returns a `watch::Receiver<AppConfig>`
+2. Start `spawn_scraper()` which listens for config changes and restarts on update
+3. Run Axum HTTP server with `/metrics` and `/health` endpoints
+4. Handle SIGINT for graceful shutdown
+
+### Scraper Architecture
+
+The scraper uses a `CancellationToken` pattern:
+- When config changes, the current scraper loop is cancelled
+- A new scraper loop starts with the updated config
+- This ensures seamless config hot-reload without server restart
+
+### Prometheus Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `route_latency_seconds` | Histogram | `route` | HTTP route latency (buckets: 5ms to 10s) |
+| `auth_attempts_total` | Counter | `auth_name`, `status` | OAuth auth attempts (success/failure) |
+
+### Authentication Types
+
+Defined via `AuthConfig` enum in `src/config.rs`:
+- **Bearer**: Static token (`token` field)
+- **Basic**: Username/password (`user`, `pass` fields)
+- **OAuth**: Keycloak password grant (`url`, `realm`, `client_id`, `user`, `pass`)
+
+**KeycloakClient** caches tokens until 1 second before expiration and auto-cleans expired tokens.
 
 ## Configuration Format
 
@@ -59,9 +84,11 @@ auths:
   - name: MyAuth
     config:
       type: OAuth  # or Bearer, Basic
-      # OAuth-specific fields: url, realm, client_id, user, pass
-      # Bearer: token
-      # Basic: user, pass
+      url: https://keycloak.example.com
+      realm: myrealm
+      client_id: myclient
+      user: "${OAUTH_USER}"
+      pass: "${OAUTH_PASS}"
 
 routes:
   - name: "EndpointName"
@@ -69,11 +96,20 @@ routes:
     auth: MyAuth  # optional, references auth by name
 ```
 
+Environment variables are expanded via `${VAR}` syntax (shellexpand). A `.env` file is loaded via dotenvy.
+
 ## Key Dependencies
 
-- `axum` for HTTP server
-- `reqwest` for HTTP client (rustls-tls, no OpenSSL, 30s timeout)
-- `prometheus` for metrics collection
-- `signal-hook-tokio` for SIGHUP config reload
-- `thiserror` for error handling
-- `tracing` for structured logging
+- `axum` - HTTP server
+- `reqwest` - HTTP client (rustls-tls, no OpenSSL, 30s timeout)
+- `prometheus` - Metrics collection
+- `tokio` / `tokio-util` - Async runtime, `CancellationToken`
+- `signal-hook-tokio` - SIGHUP config reload
+- `thiserror` - Error handling
+- `tracing` / `tracing-subscriber` - Structured logging
+- `chrono` - Token expiration handling
+- `serde` / `serde_yaml` - Config deserialization
+
+## Rust Edition
+
+Uses Rust edition 2024.
