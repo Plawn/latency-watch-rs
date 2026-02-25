@@ -77,6 +77,10 @@ Defined via `AuthConfig` enum in `src/config.rs`:
 ## Configuration Format
 
 ```yaml
+variables:
+  BASE_URL: https://api.example.com
+  IDENTITY_URL: https://keycloak.example.com
+
 listen_addr: "0.0.0.0:9090"
 scrape_interval_seconds: 15
 
@@ -84,7 +88,7 @@ auths:
   - name: MyAuth
     config:
       type: OAuth  # or Bearer, Basic
-      url: https://keycloak.example.com
+      url: ${IDENTITY_URL}
       realm: myrealm
       client_id: myclient
       user: "${OAUTH_USER}"
@@ -92,11 +96,11 @@ auths:
 
 routes:
   - name: "EndpointName"
-    url: https://example.com/api
+    url: ${BASE_URL}/api
     auth: MyAuth  # optional, references auth by name
 ```
 
-Environment variables are expanded via `${VAR}` syntax (shellexpand). A `.env` file is loaded via dotenvy.
+The optional `variables` section defines reusable values referenced with `${VAR}` syntax (like GitLab CI). Config variables take precedence over environment variables. Variable values can themselves reference env vars. Environment variables are also expanded via `${VAR}` syntax (shellexpand). A `.env` file is loaded via dotenvy.
 
 ## Key Dependencies
 

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use futures::StreamExt;
 use serde::Deserialize;
 use signal_hook::consts::SIGHUP;
@@ -34,10 +36,20 @@ pub struct Auth {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct AppConfig {
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub variables: HashMap<String, String>,
     pub routes: Vec<RouteConfig>,
     pub auths: Vec<Auth>,
     pub scrape_interval_seconds: u64,
     pub listen_addr: String,
+}
+
+/// Used for the first parse pass to extract only the variables section.
+#[derive(Debug, Deserialize)]
+struct PartialConfig {
+    #[serde(default)]
+    variables: HashMap<String, String>,
 }
 
 #[derive(Debug, Error)]
@@ -52,9 +64,31 @@ pub enum ConfigError {
 
 pub async fn load_config() -> Result<AppConfig, ConfigError> {
     let raw = tokio::fs::read_to_string("config.yaml").await?;
-    let expanded = shellexpand::env(&raw)
+
+    // First pass: expand env vars and extract the variables section
+    let expanded_for_vars = shellexpand::env(&raw)
         .map_err(|e| ConfigError::EnvExpansion(e.to_string()))?
         .to_string();
+    let partial: PartialConfig = serde_yaml::from_str(&expanded_for_vars)?;
+
+    if partial.variables.is_empty() {
+        // No config variables, use the already-expanded string directly
+        let cfg: AppConfig = serde_yaml::from_str(&expanded_for_vars)?;
+        return Ok(cfg);
+    }
+
+    // Second pass: expand again with config variables taking precedence over env vars
+    let variables = partial.variables;
+    let expanded = shellexpand::env_with_context(&raw, |var: &str| {
+        if let Some(val) = variables.get(var) {
+            Ok(Some(val.clone()))
+        } else {
+            std::env::var(var).map(Some)
+        }
+    })
+    .map_err(|e| ConfigError::EnvExpansion(e.to_string()))?
+    .to_string();
+
     let cfg: AppConfig = serde_yaml::from_str(&expanded)?;
     Ok(cfg)
 }

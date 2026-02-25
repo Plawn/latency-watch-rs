@@ -1,3 +1,6 @@
+variables:
+  IDENTITY_URL: https://identity.blumana.app
+  API_BASE_URL: https://api2.temp2-webservice.blumana.app
 
 listen_addr: "0.0.0.0:9090"
 
@@ -5,14 +8,14 @@ scrape_interval_seconds: 15
 
 auths:
   # - name: Bearer
-  #   config: 
+  #   config:
   #     type: Bearer
   #     token: TOKEN
-  
+
   - name: Blumana
-    config: 
+    config:
       type: OAuth
-      url: https://identity.blumana.app
+      url: ${IDENTITY_URL}
       realm: blumana
       client_id: front
       user: ${BLU_USERNAME}
@@ -20,5 +23,5 @@ auths:
 
 routes:
   - name: "Self"
-    url: https://api2.temp2-webservice.blumana.app/user/self
+    url: ${API_BASE_URL}/user/self
     auth: Blumana
